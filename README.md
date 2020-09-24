@@ -1,4 +1,5 @@
 # pyCONTIN package:
+
 This is a python wrapper for CONTIN package.
 CONTIN package is a Fortran77 program for solving Fredelhom equations of the first kind, developed by S.W. Provencher.
 
@@ -6,28 +7,35 @@ Currently this wrapper generates the input file for CONTIN main program, and the
 
 [Official webpage of CONTIN](http://lcmodel.ca/contin.shtml)
 
+The application of the program are quite extensive, meaning it also has a lot of different settings. 
+
 ## How does the program work
 
 ### input for pyCONTIN
+
 - Data to be analyzed
 - Parameter file for CONTIN
 
 ### The process
-1. The program reads the data and the parameter file, then it generates input files for CONTIN fortran program. 
-2. CONTIN does the calculation and returns the results in an ouput file.
+
+1. The program reads the data and the parameter file, then it generates input files for CONTIN fortran program.
+2. CONTIN does the calculation and returns the results in an output file.
 3. pyCONTIN parse the output file and returns the result
 
 ## Files required to run this program
+
 ```./dev/CONTINWrapper.py```: Main script of pyCONTIN. Only this file, this file does not depend on other python files in this script. Most of the python files in this package are just test files.
 
-```./exec/contin.for```: The main program of doing inverse Laplace transform
+```./exec/contin.for```: The fortran main program of doing inverse Laplace transform
+
+```./exec/contin-windows.exe```: A package exe version of the fortan program, meaning you do not need fortan installed to run it.
 
 ```./dev/paramTemplate.txt```: A parameter file set up by the user for setting the parameters of CONTIN.
 
 
 ## Installation and setup
 - Install gfortran for your system
-- In ```./exec``` folder, run the following command to  
+- In ```./exec``` folder, run the following command to
 
 ```
 gfortran -std=legacy contin.for -o contin.out
@@ -45,10 +53,10 @@ The calculated results in the ouput file of CONTIN looks like this:
  * 6.11E-08      8.02E-13    9.83727E+00    9.83727E+00      9.923E-02          1.000              0.000              1.000
 
     ORDINATE    ERROR  ABSCISSA
-   0.000E+00  5.5D-19  5.00E-06X                                                                                                   
-   0.000E+00  4.2D-17  7.12E-06X                                                                                                   
-   0.000E+00  7.1D-17  1.01E-05X                                                                                                   
-   0.000E+00  1.1D-17  1.44E-05X 
+   0.000E+00  5.5D-19  5.00E-06X
+   0.000E+00  4.2D-17  7.12E-06X
+   0.000E+00  7.1D-17  1.01E-05X
+   0.000E+00  1.1D-17  1.44E-05X
 
 
 ```

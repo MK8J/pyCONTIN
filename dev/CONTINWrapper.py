@@ -1,77 +1,268 @@
-from __future__ import print_function
+#! python3
+
 import numpy as np
 import os
 import re
-
-file_path = os.path.abspath(os.path.dirname(__file__))
-fhead, ftail = os.path.split(file_path)
-
-CONTINPath = os.path.join(fhead, 'exec/contin.out')
+import sys
 
 
-def runCONTINfit(xdata, ydata, parameterFile, continInputFile=None, continOutputFile=None):
-    """
+class continParams():
+    '''
+    A class that contains all the parameters
+    that can be provided to contin. Check out its __dict__
+    '''
+
+    formatSpecParam = ('IFORMT', 'IFORMY')
+
+    def __init__(self):
+
+        self.IQUAD = 3
+        self.LAST = 1
+        self.IUNIT = 1
+        self.GMNMX = {1: -1, 2: -1}
+        self.IWT = 2
+        self.NERFIT = 0
+        self.NINTT = 0
+        self.NLINF = 1
+        self.NORDER = 2
+        self.IFORMY = '(1E11.6)'
+        self.IFORMT = '    (1E11.6)'
+        self.DOUSNQ = -1
+        self.RUSER = {i: None for i in range(1, 51)}
+        self.IUSER = {1: None, 2: None, 3: None, 10: None, 11: None, 18: None}
+        self.LUSER = {1: None, 3: None, 4: None}
+        self.NONNEG = 1
+        self.NG = 50
+        # self.NNSGN =
+        #self.NSGN = '          0           0          0           0'
+        self.NNSGN = {1: 0, 2: 2}
+        self.NSGN = {1: 2, 2: 2, 3: 0, 4: 0}
+
+    def get(self, xdata=None):
+
+        # copy the dict so we don't make changes
+        params = {}
+        for key, value in self.__dict__.items():
+            if type(value) == dict:
+                value = value.copy()
+            params[key] = value
+
+        if xdata is not None:
+
+            if params['GMNMX'][1] == -1:
+                params['GMNMX'][1] = 2 * (xdata[1] - xdata[0])
+
+            if params['GMNMX'][2] == -1:
+                params['GMNMX'][2] = np.max(xdata) / 2
+
+                # print(params['GMNMX'], 'HEREHERHEHR')
+        return params
+
+    def update(self, parameter, value, counter=None):
+        # for k, v in kwargs.items():
+        if hasattr(self, parameter):
+
+            if type(value) == dict:
+                getattr(self, parameter).update(value)
+
+            elif counter is None or counter == "":
+
+                if parameter in self.formatSpecParam:
+                    setattr(self, parameter, value.strip())
+
+                else:
+                    setattr(self, parameter,  float(value))
+            else:
+                getattr(self, parameter)[int(counter)] = int(value)
+
+        else:
+            print('paramter {} not knonwn'.format(parameter))
+
+
+class continWrapper():
+
+    def __init__(self, inputfile, outputfile):
+        self.outputfile = outputfile
+        self.inputfile = inputfile
+        self.params = continParams()
+
+        file_path = os.path.abspath(os.path.dirname(__file__))
+        fhead, _ = os.path.split(file_path)
+
+        self.execFile = os.path.join(fhead, os.path.join('exec', 'contin.out'))
+
+    def run(self):
+
+        fullcommand = "'" + self.execFile + "'" + " < '" +\
+                      self.inputfile + "' > '" + self.outputfile + "'"
+
+        val = os.system(fullcommand)
+
+        # if an error occured under mac, try using wine
+        if val == 34304:
+            print('now trying the windows exe running under wine')
+            execFile = os.path.join(
+                fhead, os.path.join('exec', 'contin-windows.exe'))
+
+            fullcommand = "'" + execFile + "'" + " < '" +\
+                          self.inputfile + "' > '" + self.outputfile + "'"
+
+            if 'darwin' in sys.platform:
+                fullcommand = 'wine ' + fullcommand
+
+            os.system(fullcommand)
+
+        return self.__readCONTINoutput()
+
+    def genInputFile(self, xdata, ydata):
+        """
+        Put all the parameters and xy-data into the file as the input for CONTIN
+        fileForCONTINInput: the input file for CONTIN
+
+        Parameters
+        ----------
+        fname : str
+            the file name to be saved
+        xdata : array
+        ydata : array
+
+        """
+
+        assert xdata.shape == ydata.shape, 'data shapes not the same'
+
+        # build the string to save
+        s = ' Interface input file\n'
+
+        for key, value in self.params.get(xdata).items():
+            if type(value) is dict:
+                for k, v in value.items():
+                    if v is not None:
+                        s += getParamString(key, k, v)
+
+            elif value is not None:
+                s += getParamString(key, '', value)
+
+        s += " END\r\n"
+
+        # write data
+
+        NYstr = " " + "{:6}".format("NY") + "{:5}".format(len(xdata))
+
+        s += NYstr + "\r\n"
+
+        data = np.concatenate((xdata, ydata))
+
+        for i, c in enumerate(data):
+            s += "{:>11.4E}".format(c) + '\r\n'
+
+        with open(self.inputfile, 'w+') as of:
+            of.write(s)
+
+    def get_params(self, paramFile):
+        """
+        loads the custom paramters from the paramFile.
+        It is assumed it is in csv format.
+
+        retrusn a dic
+        """
+
+        with open(paramFile, 'r') as f:
+            titleLine = next(f)
+
+            for line in f:
+                p, i, v = line.split(",")
+
+                self.params.update(p, v, i)
+
+    def __readCONTINoutput(self):
+        """
+        Read in the output file generated by CONTIN,
+        find the blocks that contains the fitted results,
+        then return a list of data:
+        [[(alphaArray1, dataArray1), (alphaArray2,dataArray2),....]
+
+        each numpy array has three columns, recording ORDINATE, ERROR and ABSCISSA, respectively
+        alphaArray1, alphaArray2... stores the values under the column ALPHA, ALPHA/S(1)... etc.
+
+        """
+
+        titleline = 'OBJ. FCTN. VARIANCE STD. DEV.'
+        chunkTitle = re.compile('OBJ. FCTN.       VARIANCE      STD. DEV. ')
+
+        alldata = []
+
+        with open(self.outputfile, 'r') as f:
+
+            for line in f:
+                if chunkTitle.search(line) is not None:
+
+                    alphadic = {}
+
+                    # gets the header
+                    alphaLine = next(f)
+                    if '*' in alphaLine:
+                        alphadic['marked'] = True
+
+                    alphaLine = alphaLine.replace('*', '')
+                    alphaParam = np.fromstring(alphaLine, sep=' ')
+
+                    # reduce the header line to string seperated text
+                    line = re.sub('\s\s\s+', '  ', line).strip()
+                    for key, value in zip(line.split('  '), alphaParam):
+                        alphadic[key] = value
+                    # skip a line then get the data
+                    next(f)
+                    # alldata.append((alphadic, readblock(f)))
+                    alldata.append(
+                        (alphadic, readblock(f), readSummaryData(f)))
+
+                    # skip a line then get the data
+                    # print(next(f))
+
+        return alldata
+
+
+def runCONTINfit(xdata, ydata, parameterFile, continInputFile=None, continOutputFile=None, **kwargs):
+    '''
     Run the CONTIN fitting in one go. This function packages the small functions and do all the work.
-        parameterFile: the csv parameter file to be transformed into part of continInputFile
-        continInputFile: input file for CONTIN main program, set None if use default dummpy input file
-        continOutputFile: input file for CONTIN main program, set None if use default dummpy output file
-    """
+
+    Parameters
+    ----------
+    xdata : array
+        The x data for the array
+    ydata : array
+        The y data for the array
+    parameterFile : str
+        the csv parameter file to be transformed into part of continInputFile
+    continInputFile : str, optional
+        input file for CONTIN main program, set None if use default dummpy input file
+    continOutputFile : str, optional
+        input file for CONTIN main program, set None if use default dummpy output file
+    '''
 
     # Retrieve the current directory
-    thisDir = os.path.split(__file__)[0]
 
-    originalDir = os.getcwd()
+    if continInputFile is None:
+        folder = os.path.dirname(__file__)
+        continInputFile = os.path.join(folder, "CONTINInput.txt")
+        print(continInputFile)
 
-    os.chdir(thisDir)
+    if continOutputFile is None:
+        folder = os.path.dirname(__file__)
+        continOutputFile = os.path.join(folder, "CONTINOutput.txt")
 
-    if continInputFile == None:
-        continInputFile = "CONTINInput.txt"
-        print("continInputFile", continInputFile)
-    if continOutputFile == None:
-        continOutputFile = "CONTINOutput.txt"
+    contin = continWrapper(continInputFile, continOutputFile)
 
-    paramList = readInputParamFromFile(parameterFile)
+    contin.get_params(parameterFile)
 
-    for idx, p in enumerate(paramList):
-        if p[0] == 'GMNMX' and p[2] == -1:
-            if p[1] == 1:
-                paramList[idx] = (p[0], p[1], defaultGMNMX1(xdata))
-            if p[1] == 2:
-                paramList[idx] = (p[0], p[1], defaultGMNMX2(xdata))
+    for k, v in kwargs.items():
+        contin.params.update(k, v)
 
-    genInputFile(continInputFile, paramList, (xdata, ydata))
+    contin.genInputFile(xdata, ydata)
 
-    runCONTIN(continInputFile, continOutputFile)
+    print('about to run')
+    return contin.run()
 
-    alldata = readCONTINoutput(continOutputFile)
-
-    os.chdir(originalDir)
-    return alldata
-
-
-def writeData(outputDev, xdata=None, ydata=None):
-    """
-    Write the x(time) and y(signal) data into outputDev
-
-    outputDev: the object that the data writes into 
-    """
-
-    if xdata is None and ydata is None:
-        tp = trapLevel([0.05, 0.1])
-
-        xdata, ydata = tp.getTransient(T=200, plotGraph=True, gridnum=40)
-
-    tt = np.concatenate((xdata, ydata))
-
-    for i, c in enumerate(tt):
-        outputDev.write("{:>11.4E}".format(c) + '\n')
-        # if (i+1)%5==0:
-        #    print "\n",
-
-
-#   spec3="{:>15.6E}"
-#   print "suggest gamma1", spec3.format(0.1/np.max(t))
-#   print "suggest gamma2", spec3.format(4/(t[1]-t[0]))
 
 def getParamString(paramName, arrayIndex, paramValue):
     """Prepare the parameter names, index, and values to a string"""
@@ -87,79 +278,14 @@ def getParamString(paramName, arrayIndex, paramValue):
         fullStr = " " + spec1.format(paramName) + '\n' + " " + paramValue
 
     else:
-        fullStr = " " + spec1.format(paramName) + spec2.format(arrayIndex) + spec3.format(paramValue)
+        fullStr = " " + \
+            spec1.format(paramName) + spec2.format(arrayIndex) + \
+            spec3.format(paramValue)
 
-    if printGauge == True:
-        print("12345612345123456789012345")
+    # if printGauge == True:
+        # print("12345612345123456789012345")
 
-    return fullStr
-
-
-def genInputFile(fileForCONTINInput, paramList, data):
-    """
-    Put all the parameters and xy-data into the file as the input for CONTIN
-    fileForCONTINInput: the input file for CONTIN
-    paramList: a list of user-defined parameters [(parmeterName1, paramIndex1, paramValue1),
-    (paramName2, paramIndex2, paramValue2,...)] 
-    data: a tuple of (xdata, ydata)
-
-    """
-
-    of = open(fileForCONTINInput, 'w')
-
-    of.write(' Interface input file\n')
-
-    for param in paramList:
-        of.write(getParamString(param[0], param[1], param[2]) + "\n")
-
-    of.write(" END\n")
-
-    # write data
-    xdata, ydata = data
-
-    assert xdata.shape == ydata.shape
-
-    NYstr = " " + "{:6}".format("NY") + "{:5}".format(len(xdata))
-
-    of.write(NYstr + "\n")
-
-    writeData(of, xdata, ydata)
-
-
-def defaultGMNMX1(t):
-    return 0.1 / np.max(t)
-
-
-def defaultGMNMX2(t):
-    return 4 / (t[1] - t[0])
-
-
-def readInputParamFromFile(templateFile):
-    """
-    Read a parameter setting file and return a list of parameters
-    in the form of [(parmeterName1, paramIndex1, paramValue1),
-    (paramName2, paramIndex2, paramValue2,...)] 
-    This function also converts read-in values to appropriate data types.
-    """
-
-    infile = open(templateFile, 'r')
-
-    titleLine = next(infile)
-
-    formatSpecParam = ('IFORMT', 'IFORMY')
-
-    paramList = []
-    for line in infile:
-        tmpParam = line.split(",")
-        if tmpParam[1] is not "":
-            tmpParam[1] = int(tmpParam[1])
-        if tmpParam[0] not in formatSpecParam:
-            tmpParam[2] = float(tmpParam[2])
-        else:
-            tmpParam[2] = tmpParam[2].strip()
-        paramList.append(tmpParam)
-
-    return paramList
+    return fullStr + '\r\n'
 
 
 def readblock(fileObj):
@@ -168,7 +294,7 @@ def readblock(fileObj):
         ORDINATE    ERROR  ABSCISSA
    2.930E-06  1.8D-07  5.00E+02      X.
    8.066E-06  4.8D-07  6.80E+02                 .X.
-   1.468E-05  8.3D-07  9.24E+02                               ..X. 
+   1.468E-05  8.3D-07  9.24E+02                               ..X.
    2.204E-05  1.2D-06  1.26E+03                                              ...X...
 
     """
@@ -188,39 +314,63 @@ def readblock(fileObj):
     return np.array(data)
 
 
-def readCONTINoutput(filename):
-    """
-    Read in the output file generated by CONTIN, 
-    find the blocks that contains the fitted results,
-    then return a list of data:
-    [[(alphaArray1, dataArray1), (alphaArray2,dataArray2),....]
+def readSummaryData(fileObj=None):
+    s = '''0PEAK 1 GOES FROM  6.257E-04 TO  7.357E-01   J         MOMENT(J)        PERCENT ERROR          M(J)/M(J-1)   PERCENT ERROR    J
+                                                -1    2.9213 X (10**   1)         3.0E-02
+                                                 0    2.9995 X (10**   0)         9.8E-03           1.0268E-01         4.0E-02    0
+                                                 1    3.0883 X (10**  -1)         2.7E-02           1.0296E-01         3.6E-02    1
+                   (STD. DEV.)/MEAN =  5.0E-02   2    3.1876 X (10**  -2)         5.3E-02           1.0322E-01         7.9E-02    2
+                                                 3    3.2978 X (10**  -3)         8.5E-02           1.0346E-01         1.4E-01    3
+    0PEAK 2 GOES FROM  8.245E-01 TO  5.000E+01   J         MOMENT(J)        PERCENT ERROR          M(J)/M(J-1)   PERCENT ERROR    J
+                                                -1    1.6696 X (10**   0)         3.2E-02
+                                                 0    1.5022 X (10**   0)         1.8E-02           8.9977E-01         5.0E-02    0
+                                                 1    1.3547 X (10**   0)         9.2E-03           9.0181E-01         2.7E-02    1
+                   (STD. DEV.)/MEAN =  4.6E-02   2    1.2243 X (10**   0)         1.6E-02           9.0372E-01         2.5E-02    2
+                                                 3    1.1086 X (10**   0)         2.7E-02           9.0550E-01         4.3E-02    3
 
-    each numpy array has three columns, recording ORDINATE, ERROR and ABSCISSA, respectively
-    alphaArray1, alphaArray2... stores the values under the column ALPHA, ALPHA/S(1)... etc.
+                    MOMENTS OF ENTIRE SOLUTION   J         MOMENT(J)        PERCENT ERROR          M(J)/M(J-1)   PERCENT ERROR    J
+                                                -1    3.0883 X (10**   1)         2.9E-02
+                                                 0    4.5017 X (10**   0)         8.8E-03           1.4577E-01         3.8E-02    0
+                                                 1    1.6635 X (10**   0)         9.0E-03           3.6954E-01         1.8E-02    1
+                   (STD. DEV.)/MEAN =  1.0E+00   2    1.2562 X (10**   0)         1.5E-02           7.5511E-01         2.4E-02    2
+                                                 3    1.1119 X (10**   0)         2.7E-02           8.8515E-01 '''
 
-    """
+    # get the moments
+    p = re.compile('\s{5,}0')
+    q1 = re.compile('0\(FOR ALPHA/S\(1\)')
+    q2 = re.compile('MOMENTS OF ENTIRE SOLUTION')
+    data = []
 
-    chunkTitle = re.compile('OBJ. FCTN.       VARIANCE      STD. DEV. ')
-
-    fileObj = open(filename, 'r')
-
-    alldata = []
-
+    # for line in s.splitlines():
     for line in fileObj:
-        if chunkTitle.search(line) is not None:
-            alphaLine = next(fileObj)
-            alphaLine = alphaLine.replace('*', '')
-            alphaParam = np.fromstring(alphaLine, sep=' ')
+        # print(line)
+        # print(p.search(line))
 
-            next(fileObj)
-            alldata.append((alphaParam, readblock(fileObj)))
+        if q1.search(line) is not None:
+            break
+        if q2.search(line) is not None:
+            break
+        if p.search(line) is not None:
+            # print('here')
+            # print(line)
 
-    return alldata
+            line = line.replace('X', '*')
+
+            line = re.sub('\s\s\s\s+', '\t', line).strip()
+            vals = line.split('\t')
+            amp = eval(vals[1])
+            ampE = eval(vals[2])
+            tau = float(vals[3])
+            tauE = eval(vals[4])
+
+            data.append([tau, amp, tauE, ampE])
+
+            # dataContent = line[0:31]
+            # dataContent = dataContent.replace('D', 'E')
+            # datarow = list(map(float, dataContent.split()))
+            # data.append(datarow)
+    # print(np.array(data))
+    return np.array(data)
 
 
-def runCONTIN(inputFile, outputFile):
-    execFile = CONTINPath
-
-    fullcommand = execFile + " < " + inputFile + " > " + outputFile;
-
-    os.system(fullcommand)
+# print(readSummaryData())
